@@ -1,51 +1,56 @@
 import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
-import io.ktor.utils.io.jvm.javaio.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import rawhttp.core.RawHttp
-import rawhttp.core.body.FileBody
-import java.io.File
 import java.net.InetSocketAddress
+import java.util.concurrent.BlockingQueue
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.atomic.AtomicBoolean
 
 
-class Server(port: Int) {
+class Server(port: Int, private val maxThreads: Int) {
     private val server = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp().bind(InetSocketAddress("127.0.0.1", port))
+    private val connectionInfo = ConnectionInfo()
 
-    fun run() {
-        println("Listening on: ${server.localAddress}")
-        runBlocking {
-            val socket = server.accept()
-            val output = socket.openWriteChannel(autoFlush = true)
-            val input = socket.openReadChannel()
-            try {
-                var line: String? = null
-                var httpReqString = ""
-                while (line?.isNotEmpty() != false) {
-                    line = input.readUTF8Line(Int.MAX_VALUE)
-                    httpReqString += "$line" + "\n"
-                }
-                val req = RawHttp().parseRequest(httpReqString)
-                val path = req.uri.path
-                println("Received query: $path")
-
-                val file = File(path.drop(1))
-                val response = if (file.exists()) {
-                    println("Ok")
-                    RawHttp().parseResponse(
-                        "HTTP/1.1 200 OK\n"
-                    ).withBody(FileBody(file))
-                } else {
-                    println("Not found")
-                    RawHttp().parseResponse(
-                        "HTTP/1.1 404 Not Found\n"
-                    )
-                }
-                response.writeTo(output.toOutputStream());
-            } catch (e: Throwable) {
-                e.printStackTrace()
-                socket.close()
+    suspend fun run() {
+        server.use { server ->
+            while (true) {
+                val socket = server.accept()
+                println("new connection request")
+                startNewConnection(socket)
             }
+        }
+    }
+
+    private suspend fun startNewConnection(socket: Socket) {
+        val connection = connectionInfo.getConnection()
+        connection.startNew(socket)
+    }
+
+    inner class ConnectionInfo {
+        private val clientConnections = mutableListOf<ClientConnection>()
+        private val freeConnections =  Channel<ClientConnection>()
+
+        suspend fun getConnection(): ClientConnection {
+            return if (clientConnections.size < maxThreads) {
+                val newConnection = ClientConnection(connectionInfo)
+                clientConnections.add(newConnection)
+                newConnection
+            } else {
+                awaitConnection()
+            }
+        }
+
+        fun freeConnection(connection: ClientConnection) {
+            runBlocking {
+                freeConnections.send(connection)
+            }
+        }
+
+        private suspend fun awaitConnection(): ClientConnection {
+            return freeConnections.receive()
         }
     }
 }
