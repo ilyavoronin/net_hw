@@ -1,5 +1,6 @@
 
-suspend fun main(args: Array<String>) {
-    val server = Server(args[0].toInt(), args[1].toInt())
+fun main() {
+    val port = 4041
+    val server = Server(port)
     server.run()
 }
