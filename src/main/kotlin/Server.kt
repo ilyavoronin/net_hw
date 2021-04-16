@@ -9,16 +9,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import rawhttp.core.*
 import rawhttp.core.body.BytesBody
+import rawhttp.core.body.FileBody
 import rawhttp.core.body.HttpMessageBody
+import java.io.File
 import java.lang.IllegalStateException
 import java.net.InetSocketAddress
 import java.net.http.HttpHeaders
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 
 class Server(port: Int) {
+    private val myCachedFiles = HashSet<String>()
     private val myPort = port
     private val server = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp().bind(InetSocketAddress("127.0.0.1", port))
 
@@ -41,24 +45,44 @@ class Server(port: Int) {
                 line = input.readUTF8Line(Int.MAX_VALUE)
                 httpRespString += "$line" + "\n"
             }
-            println("Received request from browser")
             var req = RawHttp().parseRequest(httpRespString)
-            print(req.toString())
-            val (host, port) = parseHost(req)
-            req = modify(req)
+            println("Received request from browser: ${req.uri}")
+            val requestedPath = req.uri.path
+            var resp: RawHttpResponse<Void>
+            if (!myCachedFiles.contains(requestedPath)) {
+                val (host, port) = parseHost(req)
+                req = modify(req)
 
-            println("Sending request:")
-            print(req.toString())
-            val connectionSocket = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp().connect(InetSocketAddress(host, port))
-            val realServerOutput = connectionSocket.openWriteChannel(autoFlush = true)
-            val realServerInput = connectionSocket.openReadChannel()
+                println("Sending request to real server: $host:$port")
+                val connectionSocket =
+                    aSocket(ActorSelectorManager(Dispatchers.IO)).tcp().connect(InetSocketAddress(host, port))
+                val realServerOutput = connectionSocket.openWriteChannel(autoFlush = true)
+                val realServerInput = connectionSocket.openReadChannel()
 
 
 
-            req.writeTo(realServerOutput.toOutputStream())
-            val resp = readResponse(realServerInput)
-            println("Received response:")
-            println(resp.toString())
+                req.writeTo(realServerOutput.toOutputStream())
+                resp = readResponse(realServerInput)
+                val body = resp.body
+                if (body.isPresent && !body.isEmpty) {
+                    myCachedFiles.add(requestedPath)
+                    val absPath = getCurrPath() + requestedPath
+                    val file = File(absPath.dropLastWhile { it != '/' })
+                    file.mkdirs()
+                    val bytesBody = body.get().eager().asRawBytes()
+                    File(absPath).writeBytes(bytesBody)
+                    File(absPath + ".response").writeText(resp.toString())
+                    resp = resp.withBody(BytesBody(bytesBody))
+                }
+                println("Received response:")
+                println(resp.toString())
+            } else {
+                val path = getCurrPath() + requestedPath
+
+                resp = RawHttp().parseResponse(File(path + ".response"))
+                    .withBody(FileBody(File(getCurrPath() + requestedPath)))
+                println("Loaded requested file from disk")
+            }
 
             resp.writeTo(output.toOutputStream())
             println("Sending response to browser")
@@ -77,15 +101,7 @@ class Server(port: Int) {
     private fun parseHost(resp: RawHttpRequest): Pair<String, Int> {
         return resp.uri.path.let {
             val str = it.drop(1)
-            val j = str.indexOf(":")
-            if (j == -1) {
-                Pair(str, 80)
-            } else {
-                Pair(
-                    str.take(j),
-                    str.takeLast(str.length - j).toIntOrNull() ?: throw IllegalStateException("Port is not integer")
-                )
-            }
+            return@let Pair(str, 80)
         }
     }
 
@@ -113,6 +129,10 @@ class Server(port: Int) {
             req = req.withBody(BytesBody(request.body.get().asRawBytes()))
         }
         return req
+    }
+
+    private fun getCurrPath(): String {
+        return File("").absolutePath
     }
 
 }
