@@ -1,6 +1,8 @@
 
-fun main(args: Array<String>) {
+fun main() {
+    val host = "localhost"
+    val port = 4040
     val client = Client()
 
-    client.run(args[0], args[1].toInt())
+    client.run(host, port)
 }

@@ -10,51 +10,35 @@ import java.net.URI
 class Client {
     fun run(host: String, port: Int) {
         runBlocking {
-            val socket = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp().connect(InetSocketAddress(host, port))
-            try {
                 println("Waiting for connection")
-                val input = socket.openReadChannel()
-                val output = socket.openWriteChannel(autoFlush = true)
-                val connectionMsg = input.readUTF8Line(Int.MAX_VALUE)
-                println(connectionMsg)
-                if (connectionMsg != "connected") {
-                    socket.close()
-                    return@runBlocking
-                }
-
                 while (true) {
-                    println("Input filename:")
-                    val fileName = readLine() ?: break
-                    if (fileName == "close") {
-                        break
-                    }
+                    val socket =
+                        aSocket(ActorSelectorManager(Dispatchers.IO)).tcp().connect(InetSocketAddress(host, port))
 
-                    val request = RawHttpRequest(
-                        RequestLine("GET", URI("/$fileName"), HttpVersion.HTTP_1_1),
-                        RawHttpHeaders.newBuilder().with("Host", "$host:$port").build(), null, null)
-                    request.writeTo(output.toOutputStream())
-                    println(request.toString())
-
-                    var line: String? = null
-                    var httpRespString = ""
-                    while (line?.isNotEmpty() != false) {
-                        line = input.readUTF8Line(Int.MAX_VALUE)
-                        httpRespString += "$line" + "\n"
+                    val input = socket.openReadChannel()
+                    val output = socket.openWriteChannel(autoFlush = true).toOutputStream()
+                    println("Print command type: f or c")
+                    val type = readLine()
+                    if (type != "f" && type != "c") {
+                        println("Wrong type")
+                        continue
                     }
-
-                    val resp = RawHttp().parseResponse(httpRespString)
-                    val bodyLength = resp.headers["Content-Length"]?.toString()?.drop(1)?.dropLast(1)?.toIntOrNull() ?: 0
-                    print(httpRespString)
-                    println("Body length: $bodyLength")
-                    val bytes = ByteArray(bodyLength)
-                    (0 until bodyLength).forEach {i ->
-                        bytes[i] = input.readByte()
+                    output.write((type + "\n").toByteArray())
+                    if (type == "f") {
+                        println("Insert function name:")
+                        val fname = readLine() + "\n"
+                        println("Insert params separated with `,`")
+                        val params = readLine() + "\n"
+                        output.write(fname.toByteArray())
+                        output.write(params.toByteArray())
+                    } else {
+                        println("Insert command:")
+                        val cname = readLine() + "\n"
+                        output.write(cname.toByteArray())
                     }
-                    println(bytes.decodeToString())
+                    val resp = input.readUTF8Line(Int.MAX_VALUE)
+                    println("Response: $resp")
                 }
-            } finally {
-                socket.close()
-            }
         }
 
     }
